@@ -210,4 +210,3 @@ def run_simulation_with_heuristic(scheduler_type="fifo"):
     
     
     
-
