@@ -1,3 +1,5 @@
+
+
 # -*- coding: utf-8 -*-
 """
 Created on Tue Nov  4 23:39:01 2025
@@ -15,11 +17,12 @@ from typing import Callable, List, Dict, Any
 
 # --- LAZY IMPORTS ---
 from JSSP_Simulation_Environment import (
-    NUM_MACHINES, JOBS_PER_EPISODE, NEW_JOB_ARRIVAL_RATE, MAX_SIM_TIME
+    NUM_MACHINES, JOBS_PER_EPISODE, NEW_JOB_ARRIVAL_RATE, MAX_SIM_TIME, JobShopEnv
 )
 
 # --- CONFIGURATION ---
 DEFAULT_FIXED_SEED = 55 # Used as the base seed
+RL_MODEL_PATH = "ppo_jssp_model" # Path to the saved RL model
 
 class JSSPManager:
     """
@@ -34,6 +37,8 @@ class JSSPManager:
         print("-" * 60)
         print(f"Execution Failed: Could not import '{name}'.")
         print(f"Please ensure '{name}.py' is in the same directory.")
+        if "stable-baselines3" in name:
+            print("Ensure you have installed RL dependencies: pip install stable-baselines3 shimmy gymnasium")
         print("-" * 60)
         sys.exit(1)
 
@@ -58,9 +63,11 @@ class JSSPManager:
             # Execute the function for this trial
             trial_result = run_func(initial_seed=current_seed, **kwargs)
             
+            # Extract metrics based on return format
             if mode in ["run-aco", "run-pso"]:
                 metrics = trial_result["best_metrics"]
             else:
+                # FIFO, SPT, and RL return metrics directly
                 metrics = trial_result
 
             tardiness = metrics['total_tardiness']
@@ -73,7 +80,11 @@ class JSSPManager:
             
             # Track the best overall run for optimization-specific details (weights/pheromones)
             if best_run_data is None or tardiness < best_run_data.get('best_metrics', {'total_tardiness': float('inf')})['total_tardiness']:
-                best_run_data = trial_result
+                if mode in ["run-aco", "run-pso"]:
+                    best_run_data = trial_result
+                else:
+                    # For FIFO/SPT/RL, the result itself is the metrics dict, so we wrap it
+                    best_run_data = {'best_metrics': metrics}
             
             if trials > 1:
                 print(f"  [Trial {trial_num:2d}, Seed {current_seed}] Tardiness: {tardiness:.2f}, Jobs: {completed}")
@@ -97,7 +108,7 @@ class JSSPManager:
             "mean_makespan": mean_makespan,
             "std_makespan": std_makespan,
             "mean_completed_jobs": mean_completed_jobs,
-            "best_metrics": best_run_data.get('best_metrics', metrics) 
+            "best_metrics": best_run_data.get('best_metrics', {}) 
         }
         
         # Add optimization-specific data from the single best trial
@@ -108,7 +119,19 @@ class JSSPManager:
             final_results["best_weights"] = best_run_data.get("best_weights")
             
         return final_results
+    # def run_train_rl(self):
+    #     try:
+    #         from Deep_RL_Agent import train_with_optuna
+    #         train_with_optuna()  # Now calls the Optuna-enabled training
+    #     except ImportError:
+    #         self._handle_import_error("Deep_RL_Agent")
 
+    # def run_test_rl(self):
+    #     try:
+    #         from Deep_RL_Agent import test_agent
+    #         test_agent() # This will now use the best_params if available
+    #     except ImportError:
+    #         self._handle_import_error("Deep_RL_Agent")
 
     # =================================================================
     # UNIFIED RESULTS PRINTING FUNCTION
@@ -162,6 +185,50 @@ class JSSPManager:
 
 
     # =================================================================
+    # RL HELPER FUNCTION (For Testing)
+    # =================================================================
+    def _run_rl_episode(self, initial_seed):
+        """
+        Helper to run a single RL test episode with a specific seed.
+        Returns metrics dictionary compatible with _run_statistical_comparison.
+        """
+        try:
+            from stable_baselines3 import PPO
+        except ImportError:
+            self._handle_import_error("stable-baselines3")
+
+        # Verify model exists
+        if not os.path.exists(f"{RL_MODEL_PATH}.zip"):
+            print(f"Error: Model '{RL_MODEL_PATH}.zip' not found. Please run '--mode train-rl' first.")
+            sys.exit(1)
+
+        # Load Model and Env
+        # Note: We load the model every time here to ensure clean state, 
+        # but for efficiency in large trials, you could load it once outside.
+        model = PPO.load(RL_MODEL_PATH)
+        env = JobShopEnv() # No render during stats collection
+        
+        # Run Episode
+        obs, info = env.reset(seed=initial_seed)
+        done = False
+        truncated = False
+        
+        while not (done or truncated):
+            action, _states = model.predict(obs, deterministic=True)
+            obs, reward, done, truncated, info = env.step(action)
+
+        # Calculate Metrics
+        total_tardiness = sum(max(0, job.completion_time - job.due_date) for job in env.completed_jobs)
+        makespan = env.env.now
+        
+        return {
+            'total_tardiness': total_tardiness,
+            'makespan': makespan,
+            'completed_jobs': len(env.completed_jobs)
+        }
+
+
+    # =================================================================
     # EXECUTION DISPATCHER
     # =================================================================
     def execute_mode(self, mode: str, trials: int):
@@ -170,19 +237,22 @@ class JSSPManager:
         print(f"   JSSP Project: Executing Mode '{mode.upper()}'")
         print(f"{'='*40}")
 
-        # --- 1. REINFORCEMENT LEARNING ---
-        if mode in ["train-rl", "test-rl"]:
-            print("Note: RL modes typically use their own internal seeding/evaluation methods.")
+        # --- 1. RL TRAINING ---
+        if mode == "train-rl":
+           
             try:
-                from Deep_RL_Agent import train_agent, test_agent
-                if mode == "train-rl":
-                    train_agent()
-                else:
-                    test_agent()
+                from Deep_RL_Agent import train_with_optuna
+                train_with_optuna()  # Now calls the Optuna-enabled training
             except ImportError:
-                self._handle_import_error("Deep_RL_Agent (and stable-baselines3)")
+                self._handle_import_error("Deep_RL_Agent")
 
-        # --- 2. BASELINE HEURISTICS (FIFO, SPT) ---
+        # --- 2. RL TESTING (Integrated Stats) ---
+        elif mode == "test-rl":
+            # Run using the statistical wrapper
+            results = self._run_statistical_comparison(mode, trials, self._run_rl_episode)
+            self._print_unified_results(mode, results)
+
+        # --- 3. BASELINE HEURISTICS (FIFO, SPT) ---
         elif mode in ["run-fifo", "run-spt"]:
             try:
                 from Baseline_Heuristics import run_simulation_with_heuristic
@@ -197,7 +267,7 @@ class JSSPManager:
             except ImportError:
                 self._handle_import_error("Baseline_Heuristics (and simpy)")
 
-        # --- 3. ACO OPTIMIZATION ---
+        # --- 4. ACO OPTIMIZATION ---
         elif mode == "run-aco":
             try:
                 from ACO_Heuristic import ACOManager
@@ -216,7 +286,7 @@ class JSSPManager:
             except ImportError:
                 self._handle_import_error("ACO_Heuristic")
 
-        # --- 4. PSO OPTIMIZATION ---
+        # --- 5. PSO OPTIMIZATION ---
         elif mode == "run-pso":
             try:
                 from PSO_Heuristic import PSOManager
@@ -267,9 +337,9 @@ def main():
     # IDE (SPYDER) COMPATIBLE EXECUTION
     # --------------------------------------------------------------------------------
     if not args.mode:
-        # 1. Define the default IDE mode and trials here:
-        IDE_RUN_MODE = "run-fifo" 
-        IDE_RUN_TRIALS = 1 
+        # Change this manually in your IDE to switch modes quickly
+        IDE_RUN_MODE = "test-rl" 
+        IDE_RUN_TRIALS = 10 
 
         print("--- IDE/No-Argument Execution Detected ---")
         print(f"Executing default IDE mode: {IDE_RUN_MODE} (Trials: {IDE_RUN_TRIALS})")
@@ -283,5 +353,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-

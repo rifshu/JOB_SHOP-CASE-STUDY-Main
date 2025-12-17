@@ -14,12 +14,12 @@ import gymnasium as gym
 from gymnasium import spaces
 
 # --- HYPERPARAMETERS & PHYSICS (TUNED FOR 1000s BASELINE) ---
-NEW_JOB_ARRIVAL_RATE = 25.0  # Jobs arrive every ~25s (Slower pace for 1000s window)
+NEW_JOB_ARRIVAL_RATE = 10.0  # Jobs arrive every ~25s (Slower pace for 1000s window)
 MEAN_TIME_TO_FAILURE = 200.0
 MEAN_TIME_TO_REPAIR = 10.0
-NUM_MACHINES = 3
-JOBS_PER_EPISODE = 20        # Goal: Finish 20 jobs
-MAX_SIM_TIME = 1000          # Strict Baseline limit
+NUM_MACHINES = 20
+JOBS_PER_EPISODE = 150        # Goal: Finish 20 jobs
+MAX_SIM_TIME = 10000          # Strict Baseline limit
 
 # --- DATA STRUCTURES ---
 class Job:
